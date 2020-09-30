@@ -1,4 +1,4 @@
-# Aplikacija-za-vo-enje-statistike-i-planiranje-zaliha-skladi-ta
+# Aplikacija-za-vodenje-statistike-i-planiranje-zaliha-skladista
 Ovaj rad prikazuje kreiranje stolne aplikacije za vođenje statistike i planiranje zaliha skladišta pomoću temporalnih i aktivnih baza podataka. Objašnjavaju se principi temporalnih i aktivnih baza podataka te se prikazuje implementacija istih. Automatizacija procesa je postignuta pomoću okidača u bazi podataka, tako da je proces naručivanja artikala sa skladišta u potpunosti automatiziran. Stolna aplikacija je rađena u Microsoft Visual Studio 2019 u C# jeziku kao Windows Forms aplikacija, a PostgreSQL je korišten za bazu podataka. Rad s aktivnim bazama podataka uvelike olakšava programiranje aplikacija pošto je većina logike pohranjena u ECU pravilima na bazi podataka.
 
 Upute za pokretanje projekta:
