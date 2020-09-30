@@ -1,0 +1,1043 @@
+--
+-- PostgreSQL database dump
+--
+
+-- Dumped from database version 12.2
+-- Dumped by pg_dump version 12.2
+
+-- Started on 2020-06-10 12:37:33
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+--
+-- TOC entry 1 (class 3079 OID 16384)
+-- Name: adminpack; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS adminpack WITH SCHEMA pg_catalog;
+
+
+--
+-- TOC entry 2898 (class 0 OID 0)
+-- Dependencies: 1
+-- Name: EXTENSION adminpack; Type: COMMENT; Schema: -; Owner: 
+--
+
+COMMENT ON EXTENSION adminpack IS 'administrative functions for PostgreSQL';
+
+
+--
+-- TOC entry 244 (class 1255 OID 17313)
+-- Name: dodaj_kolicinu_postojecem_artiklu(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.dodaj_kolicinu_postojecem_artiklu() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+declare
+	ukupno integer;
+
+stara_kolicina integer;
+
+maksi integer;
+
+begin
+select
+	count(*)
+into
+	ukupno
+from
+	skladiste
+where
+	artikl = new.artikl;
+
+select
+	kolicina
+into
+	stara_kolicina
+from
+	skladiste
+where
+	artikl = new.artikl;
+
+select
+	max_kolicina
+into
+	maksi
+from
+	skladiste
+where
+	artikl = new.artikl;
+
+if ukupno > 0
+and (stara_kolicina + new.kolicina) <= maksi then raise notice 'Postoji! Kolicina manja ili jednaka max';
+
+update
+	skladiste
+set
+	kolicina = stara_kolicina + new.kolicina
+where
+	artikl = new.artikl;
+
+return null;
+
+elsif ukupno > 0
+and (stara_kolicina + new.kolicina) > maksi then raise notice 'Postoji! Kolicina veca od max';
+
+update
+	skladiste
+set
+	kolicina = maksi
+where
+	artikl = new.artikl;
+
+return null;
+else raise notice 'NE postoji!  %', new.artikl;
+
+return new;
+
+end if;
+
+end;
+
+$$;
+
+
+ALTER FUNCTION public.dodaj_kolicinu_postojecem_artiklu() OWNER TO postgres;
+
+--
+-- TOC entry 240 (class 1255 OID 16549)
+-- Name: dohvati_najprioritetniju_narudzbu(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.dohvati_najprioritetniju_narudzbu() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$ 
+begin 
+	
+raise notice 'Dohvati';
+
+insert
+	into
+	narudzba(artikl,
+	kolicina,
+	datum_slanja,
+	kupac)
+select
+	artikl,
+	kolicina,
+	datum_narudzbe,
+	id
+from
+	kupac
+where
+	datum_dolaska is null
+order by
+	datum_narudzbe fetch first 1 rows only;
+
+return null;
+
+end;
+
+$$;
+
+
+ALTER FUNCTION public.dohvati_najprioritetniju_narudzbu() OWNER TO postgres;
+
+--
+-- TOC entry 2899 (class 0 OID 0)
+-- Dependencies: 240
+-- Name: FUNCTION dohvati_najprioritetniju_narudzbu(); Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON FUNCTION public.dohvati_najprioritetniju_narudzbu() IS 'Provjerava se koji redak iz tablice kupac ima nedefinirano vrijeme dolaska i uzima jedan redak kojemu je datum narudžbe najdalji od trenutnog. Podacima iz navedenog retka se kreira i popunjava novi redak u tablici narudzba tj. kreira se nova narudžba.';
+
+
+--
+-- TOC entry 238 (class 1255 OID 16598)
+-- Name: dostavi_min_kolicinu_artikla(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.dostavi_min_kolicinu_artikla() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+declare
+	kolicina_artikla integer;
+declare
+	broj_narudzbe integer;
+declare
+	datumnarudzbe timestamp;
+declare
+	ime varchar;
+
+begin drop table if exists temporalna;
+
+create temp table temporalna as
+select
+	artikl,
+	kolicina,
+	datum_narudzbe ,
+	datum_slanja ,
+	skladiste
+from
+	velenarudzba
+where
+	not (datum_slanja is not null)
+order by
+	datum_narudzbe asc fetch first 1 rows only;
+
+select
+	kolicina
+from
+	temporalna
+into
+	kolicina_artikla ;
+
+select
+	skladiste
+from
+	temporalna
+into
+	broj_narudzbe;
+
+select
+	artikl
+from
+	temporalna
+into
+	ime;
+
+select
+	datum_narudzbe
+from
+	temporalna
+into
+	datumnarudzbe;
+
+raise notice 'Dostavljeno % %.', kolicina_artikla, ime;
+
+update
+	velenarudzba
+set
+	datum_slanja = now()
+where
+	artikl = ime
+	and datum_narudzbe = datumnarudzbe;
+
+update
+	skladiste
+set
+	kolicina = kolicina + kolicina_artikla
+where
+	skladiste.id = broj_narudzbe;
+
+
+return null;
+
+end;
+
+$$;
+
+
+ALTER FUNCTION public.dostavi_min_kolicinu_artikla() OWNER TO postgres;
+
+--
+-- TOC entry 241 (class 1255 OID 16581)
+-- Name: isporuka_narudzbe(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.isporuka_narudzbe() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$ begin
+update
+	kupac
+set
+	procesiranje = 1
+from
+	narudzba
+where
+	narudzba.kupac = kupac.id
+	and narudzba.isporuceno = true
+	and kupac.datum_dolaska is null;
+
+raise notice 'Narudzba isporucena';
+
+return null;
+
+end;
+
+$$;
+
+
+ALTER FUNCTION public.isporuka_narudzbe() OWNER TO postgres;
+
+--
+-- TOC entry 2900 (class 0 OID 0)
+-- Dependencies: 241
+-- Name: FUNCTION isporuka_narudzbe(); Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON FUNCTION public.isporuka_narudzbe() IS 'Ukoliko je polje isporuceno u tablici narudzba = true, tada promjeni procesiranje na false u tablci kupac';
+
+
+--
+-- TOC entry 243 (class 1255 OID 16548)
+-- Name: kolicina_na_skladistu(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.kolicina_na_skladistu() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+declare
+	narucena_kol integer;
+declare
+	trenutna_kol integer;
+declare
+	minimalna integer;
+declare
+	artiklN varchar;
+declare
+	skladiste_id integer;
+
+begin drop table if exists privremena;
+
+create temp table privremena as
+select
+	skladiste.id,
+	narudzba.artikl ,
+	narudzba.kolicina as narucena ,
+	skladiste.kolicina as trenutna
+from
+	skladiste,
+	narudzba
+where
+	skladiste.artikl = narudzba.artikl
+	and narudzba.isporuceno = false
+order by
+	narudzba.datum_slanja fetch first 1 rows only;
+
+select
+	narucena
+from
+	privremena
+into
+	narucena_kol;
+
+select
+	trenutna
+from
+	privremena
+into
+	trenutna_kol;
+
+select
+	min_kolicina
+from
+	skladiste
+into
+	minimalna;
+
+select
+	artikl
+from
+	privremena
+into
+	artiklN;
+
+select
+	id
+from
+	privremena
+into
+	skladiste_id;
+
+if(narucena_kol <= trenutna_kol) then
+update
+	skladiste
+set
+	kolicina = trenutna_kol-narucena_kol
+where
+	artikl = artiklN;
+
+update
+	narudzba
+set
+	isporuceno = true,
+	skladiste = skladiste_id
+where
+	artikl = artiklN
+	and kolicina = narucena_kol;
+
+raise notice 'Kreirana narudzba';
+
+end if;
+
+if narucena_kol > trenutna_kol then
+insert
+	into
+	velenarudzba(artikl ,
+	kolicina ,
+	skladiste )
+values (artiklN,
+narucena_kol,
+skladiste_id);
+
+raise notice 'Manjak kolicine narucene robe. Kreirana velenarudzba. Naruceno % %.',
+narucena_kol,
+artiklN;
+
+end if;
+
+return null;
+
+end;
+
+$$;
+
+
+ALTER FUNCTION public.kolicina_na_skladistu() OWNER TO postgres;
+
+--
+-- TOC entry 237 (class 1255 OID 16575)
+-- Name: min_kolicina(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.min_kolicina() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+declare
+	minimalna integer;
+declare
+	trenutna integer;
+declare
+	ime varchar;
+declare
+	id_artikla integer;
+
+begin drop table if exists temporalna;
+
+create temp table temporalna as
+select
+	id,
+	artikl,
+	kolicina,
+	min_kolicina 
+from
+	skladiste
+where
+	kolicina <min_kolicina 
+order by
+	id asc fetch first 1 rows only;
+
+select
+	kolicina
+from
+	temporalna
+into
+	trenutna;
+
+select
+	min_kolicina
+from
+	temporalna
+into
+	minimalna;
+
+select
+	artikl
+from
+	temporalna
+into
+	ime;
+
+select
+	id
+from
+	temporalna
+into
+	id_artikla;
+
+if trenutna<minimalna then
+insert
+	into
+	velenarudzba (id,
+	artikl,
+	kolicina,
+	datum_narudzbe ,
+	datum_slanja ,
+	skladiste )
+values(default,
+ime,
+minimalna,
+now(),
+null,
+id_artikla);
+
+raise notice 'Naruceno % %.',
+minimalna,
+ime;
+end if;
+
+return null;
+
+end;
+$$;
+
+
+ALTER FUNCTION public.min_kolicina() OWNER TO postgres;
+
+--
+-- TOC entry 2901 (class 0 OID 0)
+-- Dependencies: 237
+-- Name: FUNCTION min_kolicina(); Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON FUNCTION public.min_kolicina() IS 'Ukoliko je trenutna količina artikla na skladištu manja od minimalne količine, kreiraj velenarudžbu i naruči određeni artikl (maksimalna količina - trenutna )';
+
+
+--
+-- TOC entry 239 (class 1255 OID 16499)
+-- Name: postavi_datum_i_vrijeme(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.postavi_datum_i_vrijeme() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+	BEGIN
+	NEW.datum_narudzbe = NOW(); 
+raise notice 'Datum je %.', now();
+   	RETURN NEW;
+	END;
+$$;
+
+
+ALTER FUNCTION public.postavi_datum_i_vrijeme() OWNER TO postgres;
+
+--
+-- TOC entry 242 (class 1255 OID 16584)
+-- Name: zatvori_narudzbu(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.zatvori_narudzbu() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+declare
+	sifra_kupca integer;
+
+begin
+select
+	kupac.id
+from
+	kupac,
+	narudzba
+into
+	sifra_kupca
+where
+	kupac.artikl = narudzba.artikl
+	and kupac.kolicina = narudzba.kolicina
+	and narudzba.skladiste is not null
+	and kupac.procesiranje = 1
+	and kupac.datum_dolaska is null
+order by
+	kupac.datum_narudzbe fetch first 1 rows only;
+
+update
+	kupac
+set
+	procesiranje = 2 ,
+	datum_dolaska = now()
+where
+	id = sifra_kupca;
+
+raise notice 'Narudzba zatvorena %', sifra_kupca;
+return null;
+
+end;
+
+$$;
+
+
+ALTER FUNCTION public.zatvori_narudzbu() OWNER TO postgres;
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
+--
+-- TOC entry 218 (class 1259 OID 16444)
+-- Name: kupac; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.kupac (
+    id integer NOT NULL,
+    artikl character varying,
+    kolicina integer,
+    datum_narudzbe timestamp without time zone,
+    datum_dolaska timestamp without time zone,
+    ime character varying,
+    procesiranje integer DEFAULT 0
+);
+
+
+ALTER TABLE public.kupac OWNER TO postgres;
+
+--
+-- TOC entry 217 (class 1259 OID 16442)
+-- Name: kupac_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.kupac_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.kupac_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 2902 (class 0 OID 0)
+-- Dependencies: 217
+-- Name: kupac_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.kupac_id_seq OWNED BY public.kupac.id;
+
+
+--
+-- TOC entry 220 (class 1259 OID 16453)
+-- Name: narudzba; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.narudzba (
+    id integer NOT NULL,
+    artikl character varying,
+    kolicina integer,
+    datum_slanja timestamp without time zone,
+    isporuceno boolean DEFAULT false,
+    kupac integer,
+    skladiste integer
+);
+
+
+ALTER TABLE public.narudzba OWNER TO postgres;
+
+--
+-- TOC entry 219 (class 1259 OID 16451)
+-- Name: narudzba_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.narudzba_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.narudzba_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 2903 (class 0 OID 0)
+-- Dependencies: 219
+-- Name: narudzba_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.narudzba_id_seq OWNED BY public.narudzba.id;
+
+
+--
+-- TOC entry 222 (class 1259 OID 16464)
+-- Name: skladiste; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.skladiste (
+    id integer NOT NULL,
+    artikl character varying,
+    kolicina integer,
+    min_kolicina integer DEFAULT 3,
+    max_kolicina integer,
+    rok_trajanja date,
+    datum_dolaska timestamp without time zone
+);
+
+
+ALTER TABLE public.skladiste OWNER TO postgres;
+
+--
+-- TOC entry 221 (class 1259 OID 16462)
+-- Name: skladiste_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.skladiste_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.skladiste_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 2904 (class 0 OID 0)
+-- Dependencies: 221
+-- Name: skladiste_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.skladiste_id_seq OWNED BY public.skladiste.id;
+
+
+--
+-- TOC entry 224 (class 1259 OID 16483)
+-- Name: velenarudzba; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.velenarudzba (
+    id integer NOT NULL,
+    artikl character varying,
+    kolicina integer,
+    datum_narudzbe timestamp without time zone,
+    datum_slanja timestamp without time zone,
+    skladiste integer
+);
+
+
+ALTER TABLE public.velenarudzba OWNER TO postgres;
+
+--
+-- TOC entry 223 (class 1259 OID 16481)
+-- Name: velenarudzba_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.velenarudzba_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.velenarudzba_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 2905 (class 0 OID 0)
+-- Dependencies: 223
+-- Name: velenarudzba_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.velenarudzba_id_seq OWNED BY public.velenarudzba.id;
+
+
+--
+-- TOC entry 2732 (class 2604 OID 16447)
+-- Name: kupac id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.kupac ALTER COLUMN id SET DEFAULT nextval('public.kupac_id_seq'::regclass);
+
+
+--
+-- TOC entry 2734 (class 2604 OID 16456)
+-- Name: narudzba id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.narudzba ALTER COLUMN id SET DEFAULT nextval('public.narudzba_id_seq'::regclass);
+
+
+--
+-- TOC entry 2736 (class 2604 OID 16467)
+-- Name: skladiste id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.skladiste ALTER COLUMN id SET DEFAULT nextval('public.skladiste_id_seq'::regclass);
+
+
+--
+-- TOC entry 2738 (class 2604 OID 16486)
+-- Name: velenarudzba id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.velenarudzba ALTER COLUMN id SET DEFAULT nextval('public.velenarudzba_id_seq'::regclass);
+
+
+--
+-- TOC entry 2886 (class 0 OID 16444)
+-- Dependencies: 218
+-- Data for Name: kupac; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+INSERT INTO public.kupac (id, artikl, kolicina, datum_narudzbe, datum_dolaska, ime, procesiranje) VALUES (531, 'Rukavice', 716, '2020-06-05 13:25:52.768468', '2020-06-05 13:25:55.286398', 'Sofija', 2);
+INSERT INTO public.kupac (id, artikl, kolicina, datum_narudzbe, datum_dolaska, ime, procesiranje) VALUES (535, 'Ketchup', 492, '2020-06-05 13:25:57.818714', NULL, 'Tin', 0);
+INSERT INTO public.kupac (id, artikl, kolicina, datum_narudzbe, datum_dolaska, ime, procesiranje) VALUES (532, 'Luk', 175, '2020-06-05 13:25:54.047414', '2020-06-05 13:25:57.818714', 'Luka', 2);
+INSERT INTO public.kupac (id, artikl, kolicina, datum_narudzbe, datum_dolaska, ime, procesiranje) VALUES (536, 'Maska za lice', 651, '2020-06-05 13:25:59.105638', NULL, 'Karolina', 0);
+INSERT INTO public.kupac (id, artikl, kolicina, datum_narudzbe, datum_dolaska, ime, procesiranje) VALUES (537, 'Fanta', 246, '2020-06-05 13:26:00.405487', NULL, 'Valentina', 0);
+INSERT INTO public.kupac (id, artikl, kolicina, datum_narudzbe, datum_dolaska, ime, procesiranje) VALUES (538, 'Maska za lice', 656, '2020-06-05 13:26:01.707125', NULL, 'Karolina', 0);
+INSERT INTO public.kupac (id, artikl, kolicina, datum_narudzbe, datum_dolaska, ime, procesiranje) VALUES (539, 'Pašteta', 366, '2020-06-05 13:26:03.009347', NULL, 'David', 0);
+INSERT INTO public.kupac (id, artikl, kolicina, datum_narudzbe, datum_dolaska, ime, procesiranje) VALUES (533, 'Maska za lice', 646, '2020-06-05 13:25:55.286398', '2020-06-05 13:26:03.009347', 'Karolina', 2);
+INSERT INTO public.kupac (id, artikl, kolicina, datum_narudzbe, datum_dolaska, ime, procesiranje) VALUES (540, 'Salama', 327, '2020-06-05 13:26:04.314722', NULL, 'Marko', 0);
+INSERT INTO public.kupac (id, artikl, kolicina, datum_narudzbe, datum_dolaska, ime, procesiranje) VALUES (541, 'Pašteta', 372, '2020-06-05 13:26:05.615379', NULL, 'David', 0);
+INSERT INTO public.kupac (id, artikl, kolicina, datum_narudzbe, datum_dolaska, ime, procesiranje) VALUES (542, 'Salata', 469, '2020-06-05 13:26:06.952502', NULL, 'Bruno', 0);
+INSERT INTO public.kupac (id, artikl, kolicina, datum_narudzbe, datum_dolaska, ime, procesiranje) VALUES (534, 'Maska za lice', 668, '2020-06-05 13:25:56.532421', NULL, 'Karolina', 1);
+
+
+--
+-- TOC entry 2888 (class 0 OID 16453)
+-- Dependencies: 220
+-- Data for Name: narudzba; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+INSERT INTO public.narudzba (id, artikl, kolicina, datum_slanja, isporuceno, kupac, skladiste) VALUES (492, 'Rukavice', 716, '2020-06-05 13:25:52.768468', true, 531, 749);
+INSERT INTO public.narudzba (id, artikl, kolicina, datum_slanja, isporuceno, kupac, skladiste) VALUES (493, 'Rukavice', 716, '2020-06-05 13:25:52.768468', true, 531, 749);
+INSERT INTO public.narudzba (id, artikl, kolicina, datum_slanja, isporuceno, kupac, skladiste) VALUES (494, 'Rukavice', 716, '2020-06-05 13:25:52.768468', true, 531, 749);
+INSERT INTO public.narudzba (id, artikl, kolicina, datum_slanja, isporuceno, kupac, skladiste) VALUES (495, 'Luk', 175, '2020-06-05 13:25:54.047414', true, 532, 728);
+INSERT INTO public.narudzba (id, artikl, kolicina, datum_slanja, isporuceno, kupac, skladiste) VALUES (496, 'Luk', 175, '2020-06-05 13:25:54.047414', true, 532, 728);
+INSERT INTO public.narudzba (id, artikl, kolicina, datum_slanja, isporuceno, kupac, skladiste) VALUES (497, 'Maska za lice', 646, '2020-06-05 13:25:55.286398', true, 533, 747);
+INSERT INTO public.narudzba (id, artikl, kolicina, datum_slanja, isporuceno, kupac, skladiste) VALUES (498, 'Maska za lice', 646, '2020-06-05 13:25:55.286398', true, 533, 747);
+INSERT INTO public.narudzba (id, artikl, kolicina, datum_slanja, isporuceno, kupac, skladiste) VALUES (499, 'Maska za lice', 646, '2020-06-05 13:25:55.286398', true, 533, 747);
+INSERT INTO public.narudzba (id, artikl, kolicina, datum_slanja, isporuceno, kupac, skladiste) VALUES (500, 'Maska za lice', 646, '2020-06-05 13:25:55.286398', true, 533, 747);
+INSERT INTO public.narudzba (id, artikl, kolicina, datum_slanja, isporuceno, kupac, skladiste) VALUES (501, 'Maska za lice', 668, '2020-06-05 13:25:56.532421', true, 534, 747);
+INSERT INTO public.narudzba (id, artikl, kolicina, datum_slanja, isporuceno, kupac, skladiste) VALUES (502, 'Maska za lice', 668, '2020-06-05 13:25:56.532421', true, 534, 747);
+INSERT INTO public.narudzba (id, artikl, kolicina, datum_slanja, isporuceno, kupac, skladiste) VALUES (503, 'Maska za lice', 668, '2020-06-05 13:25:56.532421', false, 534, NULL);
+
+
+--
+-- TOC entry 2890 (class 0 OID 16464)
+-- Dependencies: 222
+-- Data for Name: skladiste; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (728, 'Luk', 394, 92, 984, '2023-03-10', '2020-06-05 13:25:45');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (747, 'Maska za lice', 1062, 42, 884, '2021-09-08', '2020-06-05 13:25:50');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (726, 'Čips', 634, 76, 952, '2022-09-19', '2020-06-05 13:25:44');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (727, 'Krumpir', 632, 76, 952, '2022-09-15', '2020-06-05 13:25:44');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (729, 'Pepsi', 407, 43, 887, '2021-09-29', '2020-06-05 13:25:45');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (730, 'Sprite', 520, 60, 920, '2022-03-24', '2020-06-05 13:25:45');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (731, 'Fanta', 517, 59, 919, '2022-03-20', '2020-06-05 13:25:45');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (732, 'Zubna pasta', 629, 75, 951, '2022-09-11', '2020-06-05 13:25:46');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (733, 'Sapun', 293, 27, 855, '2021-04-03', '2020-06-05 13:25:46');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (734, 'Salama', 739, 91, 982, '2023-03-02', '2020-06-05 13:25:46');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (735, 'Sir', 403, 43, 886, '2021-09-22', '2020-06-05 13:25:47');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (736, 'Pašteta', 400, 42, 885, '2021-09-18', '2020-06-05 13:25:47');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (737, 'Tuna', 513, 59, 918, '2022-03-13', '2020-06-05 13:25:47');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (738, 'Mesni narezak', 176, 10, 821, '2020-10-02', '2020-06-05 13:25:48');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (739, 'Pile', 288, 26, 853, '2021-03-27', '2020-06-05 13:25:48');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (740, 'Salata', 286, 26, 853, '2021-03-23', '2020-06-05 13:25:48');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (741, 'Ketchup', 398, 42, 885, '2021-09-15', '2020-06-05 13:25:49');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (742, 'Majoneza', 510, 58, 917, '2022-03-09', '2020-06-05 13:25:49');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (743, 'Ljuti umak', 508, 58, 916, '2022-03-06', '2020-06-05 13:25:49');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (744, 'Kokošja juha', 171, 10, 820, '2020-09-25', '2020-06-05 13:25:49');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (745, 'Alpska juha', 284, 26, 852, '2021-03-20', '2020-06-05 13:25:50');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (746, 'Kiseli krastavci', 281, 25, 851, '2021-03-16', '2020-06-05 13:25:50');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (748, 'Sredstvo za dezinfekciju', 757, 93, 987, '2023-03-30', '2020-06-05 13:25:51');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (750, 'Kruškovac', 167, 9, 819, '2020-09-18', '2020-06-05 13:25:51');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (751, 'Crno vino', 530, 61, 923, '2022-04-09', '2020-06-05 13:25:52');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (752, 'Bijelo vino', 277, 25, 850, '2021-03-09', '2020-06-05 13:25:52');
+INSERT INTO public.skladiste (id, artikl, kolicina, min_kolicina, max_kolicina, rok_trajanja, datum_dolaska) VALUES (749, 'Rukavice', 132, 93, 987, '2023-03-26', '2020-06-05 13:25:51');
+
+
+--
+-- TOC entry 2892 (class 0 OID 16483)
+-- Dependencies: 224
+-- Data for Name: velenarudzba; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+INSERT INTO public.velenarudzba (id, artikl, kolicina, datum_narudzbe, datum_slanja, skladiste) VALUES (167, 'Rukavice', 93, '2020-06-05 13:25:52.768468', '2020-06-05 13:25:52.768468', 749);
+INSERT INTO public.velenarudzba (id, artikl, kolicina, datum_narudzbe, datum_slanja, skladiste) VALUES (168, 'Rukavice', 716, '2020-06-05 13:25:54.047414', '2020-06-05 13:25:54.047414', 749);
+INSERT INTO public.velenarudzba (id, artikl, kolicina, datum_narudzbe, datum_slanja, skladiste) VALUES (169, 'Maska za lice', 646, '2020-06-05 13:25:59.105638', '2020-06-05 13:25:59.105638', 747);
+INSERT INTO public.velenarudzba (id, artikl, kolicina, datum_narudzbe, datum_slanja, skladiste) VALUES (170, 'Maska za lice', 646, '2020-06-05 13:26:01.707125', '2020-06-05 13:26:01.707125', 747);
+INSERT INTO public.velenarudzba (id, artikl, kolicina, datum_narudzbe, datum_slanja, skladiste) VALUES (171, 'Maska za lice', 668, '2020-06-05 13:26:04.314722', '2020-06-05 13:26:04.314722', 747);
+INSERT INTO public.velenarudzba (id, artikl, kolicina, datum_narudzbe, datum_slanja, skladiste) VALUES (172, 'Maska za lice', 668, '2020-06-05 13:26:06.952502', '2020-06-05 13:26:06.952502', 747);
+
+
+--
+-- TOC entry 2906 (class 0 OID 0)
+-- Dependencies: 217
+-- Name: kupac_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.kupac_id_seq', 542, true);
+
+
+--
+-- TOC entry 2907 (class 0 OID 0)
+-- Dependencies: 219
+-- Name: narudzba_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.narudzba_id_seq', 503, true);
+
+
+--
+-- TOC entry 2908 (class 0 OID 0)
+-- Dependencies: 221
+-- Name: skladiste_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.skladiste_id_seq', 752, true);
+
+
+--
+-- TOC entry 2909 (class 0 OID 0)
+-- Dependencies: 223
+-- Name: velenarudzba_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.velenarudzba_id_seq', 172, true);
+
+
+--
+-- TOC entry 2740 (class 2606 OID 16475)
+-- Name: kupac kupac_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.kupac
+    ADD CONSTRAINT kupac_pk PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2742 (class 2606 OID 16461)
+-- Name: narudzba narudzba_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.narudzba
+    ADD CONSTRAINT narudzba_pk PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2744 (class 2606 OID 16473)
+-- Name: skladiste skladiste_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.skladiste
+    ADD CONSTRAINT skladiste_pk PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2746 (class 2606 OID 20558)
+-- Name: velenarudzba velenarudzba_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.velenarudzba
+    ADD CONSTRAINT velenarudzba_pk PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2751 (class 2620 OID 16957)
+-- Name: kupac create_narudzba; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER create_narudzba AFTER INSERT ON public.kupac FOR EACH ROW EXECUTE FUNCTION public.dohvati_najprioritetniju_narudzbu();
+
+
+--
+-- TOC entry 2755 (class 2620 OID 17375)
+-- Name: skladiste dodaj_kolicinu_artiklu; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER dodaj_kolicinu_artiklu BEFORE INSERT ON public.skladiste FOR EACH ROW EXECUTE FUNCTION public.dodaj_kolicinu_postojecem_artiklu();
+
+
+--
+-- TOC entry 2758 (class 2620 OID 16606)
+-- Name: velenarudzba dostavi_kolicinu_skladistu; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER dostavi_kolicinu_skladistu AFTER INSERT ON public.velenarudzba FOR EACH ROW EXECUTE FUNCTION public.dostavi_min_kolicinu_artikla();
+
+
+--
+-- TOC entry 2757 (class 2620 OID 16578)
+-- Name: velenarudzba insert_datum; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER insert_datum BEFORE INSERT ON public.velenarudzba FOR EACH ROW EXECUTE FUNCTION public.postavi_datum_i_vrijeme();
+
+
+--
+-- TOC entry 2750 (class 2620 OID 16956)
+-- Name: kupac insert_kupac_datum; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER insert_kupac_datum BEFORE INSERT ON public.kupac FOR EACH ROW EXECUTE FUNCTION public.postavi_datum_i_vrijeme();
+
+
+--
+-- TOC entry 2753 (class 2620 OID 17549)
+-- Name: narudzba insert_provjera_kolicine; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER insert_provjera_kolicine AFTER INSERT ON public.narudzba FOR EACH ROW EXECUTE FUNCTION public.kolicina_na_skladistu();
+
+
+--
+-- TOC entry 2754 (class 2620 OID 16583)
+-- Name: narudzba isporuci_narudzbu; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER isporuci_narudzbu AFTER INSERT ON public.narudzba FOR EACH ROW EXECUTE FUNCTION public.isporuka_narudzbe();
+
+
+--
+-- TOC entry 2756 (class 2620 OID 18428)
+-- Name: skladiste update_kolicina; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER update_kolicina AFTER UPDATE ON public.skladiste FOR EACH ROW EXECUTE FUNCTION public.min_kolicina();
+
+
+--
+-- TOC entry 2752 (class 2620 OID 17646)
+-- Name: narudzba zatvori_narudzbu; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER zatvori_narudzbu AFTER UPDATE ON public.narudzba FOR EACH ROW EXECUTE FUNCTION public.zatvori_narudzbu();
+
+
+--
+-- TOC entry 2747 (class 2606 OID 16476)
+-- Name: narudzba narudzba_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.narudzba
+    ADD CONSTRAINT narudzba_fk FOREIGN KEY (kupac) REFERENCES public.kupac(id);
+
+
+--
+-- TOC entry 2748 (class 2606 OID 20559)
+-- Name: narudzba narudzba_fks; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.narudzba
+    ADD CONSTRAINT narudzba_fks FOREIGN KEY (skladiste) REFERENCES public.skladiste(id);
+
+
+--
+-- TOC entry 2749 (class 2606 OID 20564)
+-- Name: velenarudzba velenarudzba_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.velenarudzba
+    ADD CONSTRAINT velenarudzba_fk FOREIGN KEY (skladiste) REFERENCES public.skladiste(id);
+
+
+-- Completed on 2020-06-10 12:37:33
+
+--
+-- PostgreSQL database dump complete
+--
+
